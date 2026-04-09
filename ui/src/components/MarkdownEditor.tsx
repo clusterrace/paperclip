@@ -364,6 +364,19 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     return map;
   }, [mentions]);
 
+  const setEditorRef = useCallback((instance: MDXEditorMethods | null) => {
+    ref.current = instance;
+    if (!instance) {
+      return;
+    }
+    if (valueRef.current !== latestValueRef.current) {
+      // Re-apply the latest controlled value once MDXEditor exposes its imperative API.
+      echoIgnoreMarkdownRef.current = valueRef.current;
+      instance.setMarkdown(valueRef.current);
+      latestValueRef.current = valueRef.current;
+    }
+  }, []);
+
   const filteredMentions = useMemo<AutocompleteOption[]>(() => {
     if (!mentionState) return [];
     const q = mentionState.query.trim().toLowerCase();
@@ -378,16 +391,6 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     if (!mentions) return [];
     return mentions.filter((m) => m.name.toLowerCase().includes(q)).slice(0, 8);
   }, [mentionState, mentions, slashCommands]);
-
-  const setEditorRef = useCallback((instance: MDXEditorMethods | null) => {
-    ref.current = instance;
-    if (instance) {
-      const v = valueRef.current;
-      echoIgnoreMarkdownRef.current = v;
-      instance.setMarkdown(v);
-      latestValueRef.current = v;
-    }
-  }, []);
 
   useImperativeHandle(forwardedRef, () => ({
     focus: () => {
@@ -545,11 +548,21 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     // also fires after typing (e.g. space to dismiss).
     const onInput = () => requestAnimationFrame(checkMention);
 
-    document.addEventListener("selectionchange", checkMention);
+    let selRafId: number | null = null;
+    const onSelectionChange = () => {
+      if (selRafId !== null) return;
+      selRafId = requestAnimationFrame(() => {
+        selRafId = null;
+        checkMention();
+      });
+    };
+
+    document.addEventListener("selectionchange", onSelectionChange);
     el?.addEventListener("input", onInput, true);
     return () => {
-      document.removeEventListener("selectionchange", checkMention);
+      document.removeEventListener("selectionchange", onSelectionChange);
       el?.removeEventListener("input", onInput, true);
+      if (selRafId !== null) cancelAnimationFrame(selRafId);
     };
   }, [checkMention, mentions, slashCommands.length]);
 
@@ -576,16 +589,24 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     const editable = containerRef.current?.querySelector('[contenteditable="true"]');
     if (!editable) return;
     decorateProjectMentions();
+    let rafId: number | null = null;
     const observer = new MutationObserver(() => {
-      decorateProjectMentions();
+      if (rafId !== null) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        decorateProjectMentions();
+      });
     });
     observer.observe(editable, {
       subtree: true,
       childList: true,
       characterData: true,
     });
-    return () => observer.disconnect();
-  }, [decorateProjectMentions, value]);
+    return () => {
+      observer.disconnect();
+      if (rafId !== null) cancelAnimationFrame(rafId);
+    };
+  }, [decorateProjectMentions]);
 
   const selectMention = useCallback(
     (option: AutocompleteOption) => {
